@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -7,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var editorWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Log.write("LAUNCH MicroPad · Accessibility=\(AXIsProcessTrusted())")
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         controller.onStatusChange = { [weak self] in self?.refreshStatus() }
         refreshStatus()

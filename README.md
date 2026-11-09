@@ -17,7 +17,7 @@ The Creator Micro ships with four layers that you switch by hand, so you always 
 - **Custom actions.** A key can send any shortcut (the recorder captures even global hotkeys like `⇧⌘D`), type text or prompts, open a URL or an app, press a menu item, scroll or zoom, or control media and volume. Keys stay held while you hold the pad key, so things like Space for the Photoshop hand tool work.
 - **Two encoders.** Separate actions for left/right rotation and click, per profile (brush size, zoom, undo/redo, tab switching…).
 - **Notifications on the edge LEDs.** The underglow flashes in the profile color when:
-  - **Claude or ChatGPT finishes a reply.** The app watches for the "Stop" button to disappear.
+  - **Claude or ChatGPT finishes a reply.** The app finds the "Stop" button next to the chat input (English or Italian UI) and flashes when it disappears.
   - **Gmail gets new mail.** The app watches the unread count in the Chrome tab title.
   - **A macOS notification banner matches your keywords**, in a color you pick.
   - **Anything else triggers it** through the `micropad://` URL scheme, for example Claude Code hooks, scripts or Shortcuts.
@@ -123,6 +123,7 @@ open -g "micropad://stop"
 
 - `~/Library/Application Support/MicroPad/profiles.json`: profiles, keys, encoders, colors
 - `~/Library/Application Support/MicroPad/alerts.json`: notification rules
+- `~/Library/Logs/MicroPad/micropad.log`: diagnostic log of key presses, actions, reply detection and alerts (capped at about 1 MB)
 
 Both are plain JSON. Updating the app never overwrites them, and newer versions read files written by older ones.
 
@@ -139,6 +140,7 @@ app/Sources/MicroPad/
   KeySender.swift        CGEvent shortcuts, typing, scroll, media keys
   AppMenus.swift         reads / presses app menu items via Accessibility
   Watchers.swift         reply watcher, notification banners, Chrome tab titles
+  Log.swift              diagnostic log
   Library.swift          curated shortcut lists per app
   Defaults.swift         default profiles
   Model.swift            data model (profiles, actions, alert rules, pad layout)
@@ -150,7 +152,7 @@ app/Sources/MicroPad/
 ## Known limitations
 
 - **Keyboard layouts:** curated shortcuts use physical key positions, so a few (like `[` `]` for brush size in Photoshop) can differ on non-US layouts. Re-record them in the editor, or pick the command from the app's own shortcut list.
-- **Reply detection:** it looks for a "Stop / Interrompi" button in Claude and ChatGPT, and may need tweaking if those apps change their UI.
+- **Reply detection:** it relies on the label of the Stop button (for example "Stop response" or "Interrompi la risposta"). If an app changes it, check the diagnostic log, which records the buttons it sees, and add the new label to `stopWords` in `Watchers.swift`.
 - **Pressed-key highlight:** in the current firmware a pressed key briefly lights white, even with key LEDs turned off.
 - **Firmware size:** it uses about 93 % of the atmega32u4's flash. `config.h` lists RGB animations you can disable if you need room.
 - **Firmware variants:** only the QMK-supported atmega32u4 Creator Micro is targeted.

@@ -62,6 +62,7 @@ final class AppController: ObservableObject {
         pad.onConnect = { [weak self] in
             guard let self else { return }
             self.connected = true
+            Log.write("PAD connected")
             self.pad.setBrightness(UInt8(self.brightness))
             self.pushLights()
             self.flashUnderglow(self.shownProfile.color, phases: 2, period: 0.3) // hello
@@ -69,6 +70,7 @@ final class AppController: ObservableObject {
         }
         pad.onDisconnect = { [weak self] in
             self?.connected = false
+            Log.write("PAD disconnected")
             self?.pressedKeys = []
             self?.held = [:]
             self?.flashTimer?.invalidate()
@@ -160,7 +162,9 @@ final class AppController: ObservableObject {
             return
         }
         if down {
-            perform(activeProfile.keys[i].action, holdKey: i)
+            let a = activeProfile.keys[i].action
+            Log.write("KEY \(i) down · profile=\(activeProfile.name) app=\(frontBundleID ?? "?") action=\(a.kind.rawValue) \(a.kind == .shortcut ? a.shortcutDescription : a.label) AX=\(AXIsProcessTrusted())")
+            perform(a, holdKey: i)
         } else if let a = held.removeValue(forKey: i) {
             KeySender.release(a)
         }
@@ -273,6 +277,7 @@ final class AppController: ObservableObject {
     }
 
     private func replyReady(_ bundleID: String) {
+        Log.write("REPLY ready in \(bundleID)")
         let profile = store.profile(for: bundleID)
         let isFront = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID
         // If you're already looking at the app, two blinks are enough; otherwise flash until a key is pressed.
@@ -282,6 +287,7 @@ final class AppController: ObservableObject {
     private func bannerAppeared(_ text: String) {
         recentBanners.insert(text, at: 0)
         if recentBanners.count > 15 { recentBanners.removeLast() }
+        Log.write("BANNER \(text) → rule: \(store.alerts.first(where: { $0.matches(text) })?.name ?? "none")")
         if let rule = store.alerts.first(where: { $0.matches(text) }) {
             alertFlash(rule.color, untilPressed: rule.untilPressed, bundle: nil)
         }
@@ -291,6 +297,7 @@ final class AppController: ObservableObject {
         // Avoid duplicates (e.g. reply ready + a notification from the same app).
         if let last = lastFlash, last.color == color, Date().timeIntervalSince(last.at) < 4 { return }
         lastFlash = (color, Date())
+        Log.write("FLASH #\(color.hex) untilPressed=\(untilPressed) app=\(bundle ?? "-")")
         flashUnderglow(color, phases: untilPressed ? -1 : 4, period: untilPressed ? 0.4 : 0.18)
         stickyBundle = untilPressed ? bundle : nil
     }

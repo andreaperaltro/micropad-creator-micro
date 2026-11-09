@@ -30,7 +30,9 @@ enum AX {
     }
 
     /// Breadth-first walk; `visit` returns true to stop.
-    static func walk(_ roots: [AXUIElement], limit: Int, deadline: Date, visit: (AXUIElement) -> Bool) {
+    /// reversed: visits the last children first (useful for elements at the bottom of a page).
+    static func walk(_ roots: [AXUIElement], limit: Int, deadline: Date, reversed: Bool = false,
+                     visit: (AXUIElement) -> Bool) {
         var queue = roots
         var index = 0
         while index < queue.count && index < limit {
@@ -38,8 +40,14 @@ enum AX {
             let el = queue[index]
             index += 1
             if visit(el) { return }
-            queue.append(contentsOf: children(el))
+            let kids = children(el)
+            queue.append(contentsOf: reversed ? kids.reversed() : kids)
         }
+    }
+
+    static func parent(_ el: AXUIElement) -> AXUIElement? {
+        guard let p = attr(el, kAXParentAttribute as String) else { return nil }
+        return (p as! AXUIElement) // swiftlint:disable:this force_cast
     }
 }
 
@@ -86,6 +94,7 @@ final class ReplyWatcher {
             AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
 
             let busy = hasStopButton(app)
+            if busy != generating[id] { Log.write("REPLY \(id) writing=\(busy)") }
             if generating[id] == true && !busy {
                 DispatchQueue.main.async { self.onReply?(id) }
             }
@@ -93,19 +102,59 @@ final class ReplyWatcher {
         }
     }
 
+    private var lastDump: [String: Date] = [:]
+
+    private func buttonLabel(_ el: AXUIElement) -> String? {
+        guard AX.string(el, kAXRoleAttribute as String) == (kAXButtonRole as String) else { return nil }
+        let label = [kAXDescriptionAttribute, kAXTitleAttribute, kAXHelpAttribute]
+            .compactMap { AX.string(el, $0 as String) }
+            .joined(separator: " ")
+        return label
+    }
+
+    private var lastStopLabel = ""
+
+    /// Only labels that start with the word (e.g. "Stop response", Italian "Interrompi la risposta"),
+    /// so chat titles in the sidebar aren't mistaken for the button.
+    private func isStop(_ label: String) -> Bool {
+        let l = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let match = Self.stopWords.contains(where: { l.hasPrefix($0) })
+        if match && l != lastStopLabel {
+            lastStopLabel = l
+            Log.write("REPLY stop button found: \"\(label)\"")
+        }
+        return match
+    }
+
+    /// The Stop button sits next to the text field: start from the focused element
+    /// and walk up; if needed, scan the window starting from the bottom.
     private func hasStopButton(_ app: AXUIElement) -> Bool {
         var found = false
-        AX.walk(AX.windows(app), limit: 8000, deadline: Date().addingTimeInterval(0.8)) { el in
-            guard AX.string(el, kAXRoleAttribute as String) == (kAXButtonRole as String) else { return false }
-            let label = [kAXDescriptionAttribute, kAXTitleAttribute, kAXHelpAttribute]
-                .compactMap { AX.string(el, $0 as String) }
-                .joined(separator: " ")
-                .lowercased()
-            if Self.stopWords.contains(where: { label.contains($0) }) {
-                found = true
-                return true
-            }
+        var seen: [String] = []
+        let check: (AXUIElement) -> Bool = { el in
+            guard let label = self.buttonLabel(el) else { return false }
+            if !label.isEmpty && seen.count < 40 && !seen.contains(label) { seen.append(label) }
+            if self.isStop(label) { found = true; return true }
             return false
+        }
+
+        if let focusedObj = AX.attr(app, kAXFocusedUIElementAttribute as String) {
+            var node: AXUIElement? = (focusedObj as! AXUIElement) // swiftlint:disable:this force_cast
+            for _ in 0..<6 {
+                guard let n = node, !found else { break }
+                AX.walk([n], limit: 1500, deadline: Date().addingTimeInterval(0.3), reversed: true, visit: check)
+                node = AX.parent(n)
+            }
+        }
+        if !found {
+            AX.walk(AX.windows(app), limit: 30000, deadline: Date().addingTimeInterval(1.2), reversed: true, visit: check)
+        }
+
+        // Every 30 s, log the buttons seen, to learn how the Stop button is labeled.
+        let key = "\(found)"
+        if Date().timeIntervalSince(lastDump[key] ?? .distantPast) > 30 {
+            lastDump[key] = Date()
+            Log.write("REPLY buttons seen (stop=\(found)): \(seen.joined(separator: " | "))")
         }
         return found
     }
@@ -119,6 +168,7 @@ final class NotificationWatcher {
 
     private let queue = DispatchQueue(label: "micropad.notifications", qos: .utility)
     private var visible: Set<String> = []
+    private var firstTick = true
     private var timer: Timer?
 
     func start() {
@@ -145,6 +195,9 @@ final class NotificationWatcher {
 
         let new = current.subtracting(visible)
         visible = current
+        // On the first pass, ignore what's already on screen (widgets, old banners).
+        if firstTick { firstTick = false; return }
+        for t in new { Log.write("NOTIFICATION seen: \(t)") }
         guard !new.isEmpty else { return }
         DispatchQueue.main.async {
             for text in new { self.onBanner?(text) }
@@ -225,6 +278,7 @@ final class TabTitleWatcher {
         }
 
         var increased: [String] = []
+        if Set(seen.keys) != Set(counts.keys) { Log.write("TABS with counter: \(seen.map { "\($0.key)=\($0.value)" }.joined(separator: " | "))") }
         for (key, n) in seen {
             if let old = counts[key], n > old, let t = titles[key] { increased.append(t) }
         }
