@@ -229,8 +229,11 @@ struct AlertRule: Codable, Hashable, Identifiable {
         keywords.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
-    func matches(_ text: String) -> Bool {
-        enabled && keywordList.contains { text.localizedCaseInsensitiveContains($0) }
+    func matches(_ text: String) -> Bool { matchedKeyword(text) != nil }
+
+    func matchedKeyword(_ text: String) -> String? {
+        guard enabled else { return nil }
+        return keywordList.first { text.localizedCaseInsensitiveContains($0) }
     }
 
     static var defaults: [AlertRule] {
@@ -250,6 +253,8 @@ enum PadLayout {
     ]
     /// Corner positions have no LED. 0 and 3 are the encoder clicks.
     static let corners: Set<Int> = [0, 3, 12, 15]
+    /// Key that shows the key map (bottom-right corner).
+    static let overlayKey = 15
     static func encoderFor(key: Int) -> Int? { key == 0 ? 0 : (key == 3 ? 1 : nil) }
     static func keyFor(encoder: Int) -> Int { encoder == 0 ? 0 : 3 }
 

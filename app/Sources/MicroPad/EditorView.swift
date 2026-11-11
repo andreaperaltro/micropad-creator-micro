@@ -69,6 +69,8 @@ struct EditorView: View {
             }
             Toggle("Key LEDs", isOn: $ctl.keyLEDs)
                 .toggleStyle(.switch).controlSize(.small)
+            Toggle("Key map (bottom-right key)", isOn: $ctl.overlayKey)
+                .toggleStyle(.switch).controlSize(.small)
             Toggle("Edge LEDs", isOn: $ctl.edgeLEDs)
                 .toggleStyle(.switch).controlSize(.small)
                 .help("Off when idle: alerts still make it flash.")
@@ -147,7 +149,8 @@ struct ProfileEditor: View {
                 Spacer(minLength: 0)
                 HStack {
                     Spacer()
-                    PadView(profile: profile, selected: ctl.selectedKey, pressed: ctl.pressedKeys) { i in
+                    PadView(profile: profile, selected: ctl.selectedKey, pressed: ctl.pressedKeys,
+                            overrides: ctl.overlayKey ? [PadLayout.overlayKey: "Key map"] : [:]) { i in
                         ctl.selectedKey = i
                     }
                     Spacer()
@@ -267,6 +270,8 @@ struct PadView: View {
     let profile: Profile
     let selected: Int?
     let pressed: Set<Int>
+    /// Forced labels for some keys (e.g. the key map key).
+    var overrides: [Int: String] = [:]
     let onSelect: (Int) -> Void
 
     private let unit: CGFloat = 78
@@ -306,7 +311,7 @@ struct PadView: View {
                     .foregroundStyle(.white.opacity(0.6))
                     .offset(y: -size / 2 + 12)
             }
-            Text(action.displayText)
+            Text(overrides[i] ?? action.displayText)
                 .font(.system(size: 10, weight: .semibold))
                 .multilineTextAlignment(.center)
                 .lineLimit(3)
@@ -330,14 +335,29 @@ struct PadView: View {
 struct KeyInspector: View {
     @Binding var profile: Profile
     let index: Int
+    @EnvironmentObject var ctl: AppController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(PadLayout.name(index)).font(.title3.weight(.semibold))
 
-            GroupBox(PadLayout.encoderFor(key: index) != nil ? "Click" : "Press") {
-                ActionEditor(action: $profile.keys[index].action, apps: profile.bundleIDs)
+            if index == PadLayout.overlayKey && ctl.overlayKey {
+                GroupBox("Key map") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("In every profile this key shows the command map for the current app: hold it to peek, or tap it to keep the map open (tap again to close).")
+                            .font(.callout).fixedSize(horizontal: false, vertical: true)
+                        Toggle("Use this key for the key map", isOn: $ctl.overlayKey)
+                    }
                     .padding(6)
+                }
+            } else {
+                GroupBox(PadLayout.encoderFor(key: index) != nil ? "Click" : "Press") {
+                    ActionEditor(action: $profile.keys[index].action, apps: profile.bundleIDs)
+                        .padding(6)
+                }
+                if index == PadLayout.overlayKey {
+                    Toggle("Use this key for the key map", isOn: $ctl.overlayKey)
+                }
             }
 
             if !PadLayout.corners.contains(index) {

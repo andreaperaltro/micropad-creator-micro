@@ -238,6 +238,9 @@ final class NotificationWatcher {
 /// Works without enabling notifications: just keep the tab open (even in the background).
 final class TabTitleWatcher {
     var onIncrease: ((String) -> Void)?
+    /// On every pass: all tabs (title, number in parentheses or 0) and the title
+    /// of the active tab if Chrome is frontmost.
+    var onTick: (([(title: String, count: Int)], String?) -> Void)?
     var bundleIDs = ["com.google.Chrome"]
 
     private let queue = DispatchQueue(label: "micropad.tabs", qos: .utility)
@@ -250,32 +253,59 @@ final class TabTitleWatcher {
             let pids = self.bundleIDs.flatMap {
                 NSRunningApplication.runningApplications(withBundleIdentifier: $0).map(\.processIdentifier)
             }
-            self.queue.async { self.tick(pids) }
+            let front = NSWorkspace.shared.frontmostApplication
+            let frontPid = self.bundleIDs.contains(front?.bundleIdentifier ?? "") ? front?.processIdentifier : nil
+            self.queue.async { self.tick(pids, frontPid: frontPid) }
         }
     }
 
     private static let countRegex = try! NSRegularExpression(pattern: #"\((\d+)\)"#) // swiftlint:disable:this force_try
+    // Chrome adds changing info to titles (memory usage, "Pinned"): strip it from the key.
+    private static let noiseRegex = try! NSRegularExpression( // swiftlint:disable:this force_try
+        pattern: #"\s*-\s*(Memoria utilizzata|Memory usage)[^-]*|\s*-\s*(Fissata|Pinned)\b|\d+([.,]\d+)?\s*(MB|GB|KB)"#,
+        options: [.caseInsensitive])
 
-    private func tick(_ pids: [pid_t]) {
+    static func cleanKey(_ title: String) -> String {
+        var s = title
+        for re in [countRegex, noiseRegex] {
+            s = re.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "")
+        }
+        return s.trimmingCharacters(in: .whitespaces)
+    }
+
+    static func count(in title: String) -> Int {
+        let range = NSRange(title.startIndex..., in: title)
+        guard let m = countRegex.firstMatch(in: title, range: range),
+              let r = Range(m.range(at: 1), in: title) else { return 0 }
+        return Int(title[r]) ?? 0
+    }
+
+    private func tick(_ pids: [pid_t], frontPid: pid_t?) {
         guard AXIsProcessTrusted(), !pids.isEmpty else { return }
         var seen: [String: Int] = [:]
         var titles: [String: String] = [:]
+        var all: [(title: String, count: Int)] = []
+        var activeTitle: String?
 
         for pid in pids {
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, 0.3)
+            if pid == frontPid, let wObj = AX.attr(app, kAXFocusedWindowAttribute as String) {
+                activeTitle = AX.string(wObj as! AXUIElement, kAXTitleAttribute as String) // swiftlint:disable:this force_cast
+            }
             for window in AX.windows(app) {
                 for title in tabTitles(window) {
-                    let range = NSRange(title.startIndex..., in: title)
-                    guard let m = Self.countRegex.firstMatch(in: title, range: range),
-                          let r = Range(m.range(at: 1), in: title), let n = Int(title[r]) else { continue }
-                    // Key = title without the number, so the same tab is recognized.
-                    let key = Self.countRegex.stringByReplacingMatches(in: title, range: range, withTemplate: "")
+                    let n = Self.count(in: title)
+                    all.append((title, n))
+                    guard n > 0 else { continue }
+                    // Key = title without the number or changing info, so the same tab is recognized.
+                    let key = Self.cleanKey(title)
                     seen[key] = max(seen[key] ?? 0, n)
                     titles[key] = title
                 }
             }
         }
+        DispatchQueue.main.async { self.onTick?(all, activeTitle) }
 
         var increased: [String] = []
         if Set(seen.keys) != Set(counts.keys) { Log.write("TABS with counter: \(seen.map { "\($0.key)=\($0.value)" }.joined(separator: " | "))") }

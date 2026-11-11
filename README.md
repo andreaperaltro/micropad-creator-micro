@@ -15,6 +15,7 @@ The Creator Micro ships with four layers that you switch by hand, so you always 
 - **Visual editor.** The pad is drawn on screen. Click a key, or just press it on the real pad, then pick a command. Changes show up on the pad instantly, with no reflashing.
 - **Searchable shortcut library.** For each app you get a curated list (tools, layers, chat commands…) plus every shortcut the app declares in its own menus, read live via Accessibility.
 - **Custom actions.** A key can send any shortcut (the recorder captures even global hotkeys like `⇧⌘D`), type text or prompts, open a URL or an app, press a menu item, scroll or zoom, or control media and volume. Keys stay held while you hold the pad key, so things like Space for the Photoshop hand tool work.
+- **Key map overlay.** Hold the bottom-right key to show a translucent map of the current app's keys and encoders on screen; tap it to keep the map open until the next tap. It never steals focus, and pressed keys light up in the map. It can be turned off in the menu.
 - **Two encoders.** Separate actions for left/right rotation and click, per profile (brush size, zoom, undo/redo, tab switching…).
 - **Notifications on the edge LEDs.** The underglow flashes in the profile color when:
   - **Claude or ChatGPT finishes a reply.** The app finds the "Stop" button next to the chat input (English or Italian UI) and flashes when it disappears.
@@ -22,7 +23,7 @@ The Creator Micro ships with four layers that you switch by hand, so you always 
   - **A macOS notification banner matches your keywords**, in a color you pick.
   - **Anything else triggers it** through the `micropad://` URL scheme, for example Claude Code hooks, scripts or Shortcuts.
 
-  Keys keep their colors, so the edge color tells you where the alert came from.
+  Alerts that need reading (mail, chat replies) blink three times, then the edge stays lit until you deal with them: open the Gmail tab, let the unread count drop, switch back to the chat app, or press any key. Keys keep their colors, so the edge color tells you where the alert came from.
 - **LED controls.** Turn key LEDs and edge LEDs on or off. With edge LEDs off, alerts still flash.
 - **Safe fallback.** If the app isn't running, after 3 seconds the pad goes back to being a normal keyboard with generic Mac shortcuts.
 
@@ -114,7 +115,7 @@ This adds hooks to `~/.claude/settings.json`. The pad flashes orange when Claude
 ### Flash from anywhere
 
 ```bash
-open -g "micropad://flash?color=d97757&times=0&speed=350"   # until a key is pressed
+open -g "micropad://flash?color=d97757&times=0&speed=350"   # blink, then stay lit until a key is pressed
 open -g "micropad://flash?color=10a37f&times=3"              # three blinks
 open -g "micropad://stop"
 ```
@@ -147,6 +148,7 @@ app/Sources/MicroPad/
   ProfileStore.swift     JSON persistence
   EditorView.swift       SwiftUI editor
   AppDelegate.swift      menu bar item, URL handling, windows
+  Overlay.swift          key map overlay panel
 ```
 
 ## Known limitations

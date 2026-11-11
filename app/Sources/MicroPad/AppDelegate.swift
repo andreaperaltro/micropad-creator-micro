@@ -58,6 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let keys = item("Key LEDs", #selector(toggleKeyLEDs), "")
         keys.state = controller.keyLEDs ? .on : .off
         menu.addItem(keys)
+        let map = item("Key map (bottom-right key)", #selector(toggleOverlayKey), "")
+        map.state = controller.overlayKey ? .on : .off
+        menu.addItem(map)
         let edge = item("Edge LEDs", #selector(toggleEdgeLEDs), "")
         edge.state = controller.edgeLEDs ? .on : .off
         menu.addItem(edge)
@@ -84,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func testFlash() { controller.testFlash() }
     @objc private func toggleKeyLEDs() { controller.keyLEDs.toggle() }
     @objc private func toggleEdgeLEDs() { controller.edgeLEDs.toggle() }
+    @objc private func toggleOverlayKey() { controller.overlayKey.toggle() }
     @objc private func toggleLogin() { controller.launchAtLogin.toggle() }
     @objc private func openAccessibility() { controller.requestAccessibility(); controller.openAccessibilitySettings() }
     @objc private func quit() { NSApp.terminate(nil) }

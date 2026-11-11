@@ -32,6 +32,14 @@ final class AppController: ObservableObject {
     @Published var edgeLEDs: Bool = UserDefaults.standard.object(forKey: "edgeLEDs") as? Bool ?? true {
         didSet { UserDefaults.standard.set(edgeLEDs, forKey: "edgeLEDs"); pushLights(); onStatusChange?() }
     }
+    /// The bottom-right key shows the key map in every profile.
+    @Published var overlayKey: Bool = UserDefaults.standard.object(forKey: "overlayKey") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(overlayKey, forKey: "overlayKey"); onStatusChange?() }
+    }
+    let overlay = OverlayController()
+    private var overlayDownAt = Date.distantPast
+    private var overlaySticky = false
+    private var overlayIgnoreUp = false
     @Published var brightness: Double {
         didSet {
             UserDefaults.standard.set(brightness, forKey: "brightness")
@@ -50,6 +58,11 @@ final class AppController: ObservableObject {
     private var flashColor = RGB.off
     private var flashPhases = 0      // remaining phases; -1 = until a key is pressed
     private var flashOn = false
+    private var holdAfter = false      // stay lit after blinking
+    private var holdColor: RGB?        // pending alert: edge stays lit in this color
+    /// Alert coming from a Chrome tab: keyword and unread count at alert time.
+    private var pendingTab: (keyword: String, count: Int)?
+    private var lastTabs: [(title: String, count: Int)] = []
     /// App whose "until pressed" flash also stops when you switch back to it.
     private var stickyBundle: String?
 
@@ -103,7 +116,8 @@ final class AppController: ObservableObject {
         updateWatchTargets()
         replyWatcher.start()
         notificationWatcher.start()
-        tabWatcher.onIncrease = { [weak self] title in self?.bannerAppeared("Tab: " + title) }
+        tabWatcher.onIncrease = { [weak self] title in self?.tabIncreased(title) }
+        tabWatcher.onTick = { [weak self] tabs, active in self?.tabsUpdated(tabs, active: active) }
         tabWatcher.start()
 
         // Accessibility permission may be granted later: re-check periodically.
@@ -141,7 +155,10 @@ final class AppController: ObservableObject {
     }
 
     /// Edge color when there is no alert.
-    private var restingEdgeColor: RGB { edgeLEDs ? shownProfile.color.dimmed(0.6) : .off }
+    private var restingEdgeColor: RGB {
+        if let h = holdColor { return h }
+        return edgeLEDs ? shownProfile.color.dimmed(0.6) : .off
+    }
 
     func pushLights() {
         guard connected else { return }
@@ -155,10 +172,14 @@ final class AppController: ObservableObject {
     private func handleKey(_ i: Int, _ down: Bool) {
         guard i >= 0 && i < 16 else { return }
         if down { pressedKeys.insert(i) } else { pressedKeys.remove(i) }
-        if down && flashTimer != nil && flashPhases < 0 { stopFlash() }
+        if down && (holdColor != nil || (flashTimer != nil && holdAfter)) { stopFlash() }
 
         if editorIsFront {
             if down { selectedKey = i }
+            return
+        }
+        if overlayKey && i == PadLayout.overlayKey {
+            handleOverlayKey(down)
             return
         }
         if down {
@@ -178,6 +199,29 @@ final class AppController: ObservableObject {
         }
         let slot = activeProfile.encoders[e]
         perform(clockwise ? slot.right : slot.left, holdKey: nil)
+    }
+
+    /// Key map: hold to peek; a short tap keeps it open until the next tap.
+    private func handleOverlayKey(_ down: Bool) {
+        if down {
+            if overlay.isVisible && overlaySticky {
+                overlay.hide()
+                overlaySticky = false
+                overlayIgnoreUp = true
+            } else {
+                overlayDownAt = Date()
+                overlaySticky = false
+                overlay.show(self)
+                Log.write("KEYMAP shown · profile=\(activeProfile.name)")
+            }
+        } else {
+            if overlayIgnoreUp { overlayIgnoreUp = false; return }
+            if Date().timeIntervalSince(overlayDownAt) < 0.35 {
+                overlaySticky = true
+            } else {
+                overlay.hide()
+            }
+        }
     }
 
     /// Runs an action. With holdKey, shortcuts stay pressed until the pad key is released
@@ -224,7 +268,11 @@ final class AppController: ObservableObject {
             let color = q("color").flatMap(RGB.init(hex:)) ?? activeProfile.color
             let times = q("times").flatMap(Int.init) ?? 3
             let speed = q("speed").flatMap(Int.init) ?? 200
-            flashUnderglow(color, phases: times == 0 ? -1 : times * 2, period: Double(speed) / 1000)
+            if times == 0 {
+                flashUnderglow(color, phases: 6, period: Double(speed) / 1000, hold: true)
+            } else {
+                flashUnderglow(color, phases: times * 2, period: Double(speed) / 1000)
+            }
         case "stop":
             stopFlash()
         default:
@@ -293,18 +341,50 @@ final class AppController: ObservableObject {
         }
     }
 
+    // MARK: Chrome tabs (Gmail…)
+
+    private func totalCount(_ keyword: String, in tabs: [(title: String, count: Int)]) -> Int {
+        tabs.filter { $0.title.localizedCaseInsensitiveContains(keyword) }.map(\.count).reduce(0, +)
+    }
+
+    private func tabIncreased(_ title: String) {
+        bannerAppeared("Tab: " + title)
+        if let rule = store.alerts.first(where: { $0.matches(title) }), rule.untilPressed,
+           let kw = rule.matchedKeyword(title) {
+            pendingTab = (kw, Self.count(title))
+        }
+    }
+
+    private static func count(_ title: String) -> Int { TabTitleWatcher.count(in: title) }
+
+    /// The alert clears when you open that tab or the unread count drops.
+    private func tabsUpdated(_ tabs: [(title: String, count: Int)], active: String?) {
+        lastTabs = tabs
+        guard let p = pendingTab else { return }
+        if let active, active.localizedCaseInsensitiveContains(p.keyword) {
+            Log.write("ALERT read: tab \(p.keyword) opened")
+            stopFlash()
+        } else if totalCount(p.keyword, in: tabs) < p.count {
+            Log.write("ALERT read: unread \(p.keyword) dropped")
+            stopFlash()
+        }
+    }
+
     func alertFlash(_ color: RGB, untilPressed: Bool, bundle: String?) {
         // Avoid duplicates (e.g. reply ready + a notification from the same app).
         if let last = lastFlash, last.color == color, Date().timeIntervalSince(last.at) < 4 { return }
         lastFlash = (color, Date())
         Log.write("FLASH #\(color.hex) untilPressed=\(untilPressed) app=\(bundle ?? "-")")
-        flashUnderglow(color, phases: untilPressed ? -1 : 4, period: untilPressed ? 0.4 : 0.18)
+        // Alerts to read: 3 blinks, then a steady edge; others: 2 blinks.
+        flashUnderglow(color, phases: untilPressed ? 6 : 4, period: untilPressed ? 0.3 : 0.18, hold: untilPressed)
         stickyBundle = untilPressed ? bundle : nil
     }
 
     /// Flashes only the edge LEDs; keys keep their profile colors.
-    func flashUnderglow(_ color: RGB, phases: Int, period: TimeInterval) {
+    func flashUnderglow(_ color: RGB, phases: Int, period: TimeInterval, hold: Bool = false) {
         flashTimer?.invalidate()
+        holdAfter = hold
+        holdColor = nil
         flashColor = color
         flashPhases = phases
         flashOn = false
@@ -315,7 +395,17 @@ final class AppController: ObservableObject {
     }
 
     private func flashStep() {
-        if flashPhases == 0 { stopFlash(); return }
+        if flashPhases == 0 {
+            if holdAfter {
+                flashTimer?.invalidate()
+                flashTimer = nil
+                holdColor = flashColor
+                pad.setUnderglow(flashColor)
+            } else {
+                stopFlash()
+            }
+            return
+        }
         flashOn.toggle()
         pad.setUnderglow(flashOn ? flashColor : .off)
         if flashPhases > 0 { flashPhases -= 1 }
@@ -324,6 +414,9 @@ final class AppController: ObservableObject {
     func stopFlash() {
         flashTimer?.invalidate()
         flashTimer = nil
+        holdColor = nil
+        holdAfter = false
+        pendingTab = nil
         pad.setUnderglow(restingEdgeColor)
         stickyBundle = nil
     }
