@@ -112,15 +112,15 @@ final class ReplyWatcher {
         return label
     }
 
-    private var lastStopLabel = ""
+    private var loggedStopLabels: Set<String> = []
 
     /// Only labels that start with the word (e.g. "Stop response", Italian "Interrompi la risposta"),
     /// so chat titles in the sidebar aren't mistaken for the button.
     private func isStop(_ label: String) -> Bool {
         let l = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let match = Self.stopWords.contains(where: { l.hasPrefix($0) })
-        if match && l != lastStopLabel {
-            lastStopLabel = l
+        if match && !loggedStopLabels.contains(l) {
+            loggedStopLabels.insert(l)
             Log.write("REPLY stop button found: \"\(label)\"")
         }
         return match
