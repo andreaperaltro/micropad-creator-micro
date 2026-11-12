@@ -74,7 +74,8 @@ final class ReplyWatcher {
     /// (English and Italian UIs: "Stop response", "Interrompi la risposta"…).
     private static let stopWords = ["stop", "interrompi", "ferma"]
     /// …unless they're about dictation or recording ("Stop dictation", "Arresta dettatura").
-    private static let excludedWords = ["dettatura", "dictation", "registrazione", "recording", "vocale", "voice"]
+    private static let excludedWords = ["dettatura", "dictation", "registrazione", "recording", "vocale", "voice",
+                                        "caricamento", "loading", "download"]
     /// Buttons that appear next to the chat input once a reply is done
     /// ("Send message", "Retry", "Start voice mode"…): positive proof the reply finished.
     private static let doneWords = ["invia", "send", "riprova", "retry", "rigenera", "regenerate",
@@ -110,6 +111,7 @@ final class ReplyWatcher {
             let running = ids.compactMap { id in
                 NSRunningApplication.runningApplications(withBundleIdentifier: id).first.map { (id, $0.processIdentifier) }
             }
+            let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             // Skip this round if the previous check is still running (scans can take ~1 s).
             self.lock.lock()
             let busy = self.ticking
@@ -117,7 +119,7 @@ final class ReplyWatcher {
             self.lock.unlock()
             guard !busy else { return }
             self.queue.async {
-                self.tick(running)
+                self.tick(running, front: front)
                 self.lock.lock(); self.ticking = false; self.lock.unlock()
             }
         }
@@ -125,7 +127,14 @@ final class ReplyWatcher {
 
     private var ticking = false
 
-    private func tick(_ running: [(String, pid_t)]) {
+    // Per app: the Stop button last found and the area around the chat input. Watching these
+    // directly also works when the app sits on another desktop, where its windows aren't listed.
+    private var stopElement: [String: AXUIElement] = [:]
+    private var inputArea: [String: AXUIElement] = [:]
+    /// Last time a check could actually see the app (Stop present or surely absent).
+    private var lastConclusive: [String: Date] = [:]
+
+    private func tick(_ running: [(String, pid_t)], front: String?) {
         guard AXIsProcessTrusted() else { return }
         let runningIDs = Set(running.map { $0.0 })
         for id in generating.keys where !runningIDs.contains(id) {
@@ -144,12 +153,28 @@ final class ReplyWatcher {
             // Electron apps (like Claude) only expose web content when asked to.
             AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
 
-            let scan = hasStopButton(app)
-            if scan.stop != true, scan.done, generating[id] == true, !recentlySwitched {
-                Log.write("REPLY \(id) writing=false (done button visible)")
+            let wasVisibleAt = lastConclusive[id] ?? .distantPast
+            let scan = hasStopButton(app, id: id)
+            if scan.stop != nil || scan.done { lastConclusive[id] = Date() }
+
+            // Reply finished: alert, unless we only found out now that you're back on the app
+            // after not being able to see it (you're already looking at the answer).
+            func finished(_ how: String) {
                 generating[id] = false
                 idleStreak[id] = 0
-                DispatchQueue.main.async { self.onReply?(id) }
+                stopElement[id] = nil
+                inputArea[id] = nil
+                let blind = Date().timeIntervalSince(wasVisibleAt) > 3
+                if front == id && blind {
+                    Log.write("REPLY \(id) writing=false (\(how)) — no alert: app was not visible until now")
+                } else {
+                    Log.write("REPLY \(id) writing=false (\(how))")
+                    DispatchQueue.main.async { self.onReply?(id) }
+                }
+            }
+
+            if scan.stop != true, scan.done, generating[id] == true, !recentlySwitched {
+                finished("done button visible")
                 continue
             }
             switch scan.stop {
@@ -161,10 +186,7 @@ final class ReplyWatcher {
                 let n = (idleStreak[id] ?? 0) + 1
                 idleStreak[id] = n
                 if n >= Self.idleChecksNeeded {
-                    Log.write("REPLY \(id) writing=false (confirmed \(n)x)")
-                    generating[id] = false
-                    idleStreak[id] = 0
-                    DispatchQueue.main.async { self.onReply?(id) }
+                    finished("confirmed \(n)x")
                 }
             case .some(false):
                 if generating[id] == nil { generating[id] = false }
@@ -209,16 +231,31 @@ final class ReplyWatcher {
     /// done: a "reply finished" button (Send, Retry…) was seen near the input.
     /// The Stop button sits next to the text field: start from the focused element
     /// and walk up; if needed, scan the window starting from the bottom.
-    private func hasStopButton(_ app: AXUIElement) -> (stop: Bool?, done: Bool) {
+    private func hasStopButton(_ app: AXUIElement, id: String) -> (stop: Bool?, done: Bool) {
         var found = false
+        var foundElement: AXUIElement?
         var done = false
         var seen: [String] = []
         let check: (AXUIElement) -> Bool = { el in
             guard let label = self.buttonLabel(el) else { return false }
             if !label.isEmpty && seen.count < 40 && !seen.contains(label) { seen.append(label) }
-            if self.isStop(label) { found = true; return true }
+            if self.isStop(label) { found = true; foundElement = el; return true }
             if self.isDone(label) { done = true }
             return false
+        }
+
+        // 1. The Stop button we already know about: still there and still "Stop"?
+        if let el = stopElement[id], let label = buttonLabel(el), isStop(label) {
+            return (true, false)
+        }
+        // 2. The area around the chat input: look inside it (works on other desktops too).
+        if let area = inputArea[id], AX.string(area, kAXRoleAttribute as String) != nil {
+            let whole = AX.walk([area], limit: 3000, deadline: Date().addingTimeInterval(0.4), reversed: true, visit: check)
+            if found {
+                stopElement[id] = foundElement
+                return (true, false)
+            }
+            if whole { return (false, done) }
         }
 
         if let focusedObj = AX.attr(app, kAXFocusedUIElementAttribute as String) {
@@ -231,9 +268,22 @@ final class ReplyWatcher {
         }
         var complete = false
         if !found {
-            let windows = AX.windows(app)
-            complete = !windows.isEmpty && AX.walk(windows, limit: 30000, deadline: Date().addingTimeInterval(1.2),
-                                                    reversed: true, visit: check)
+            // Windows on the current desktop, plus the main/focused window wherever it is.
+            var roots = AX.windows(app)
+            for attr in [kAXMainWindowAttribute, kAXFocusedWindowAttribute] {
+                if let w = AX.attr(app, attr as String), CFGetTypeID(w) == AXUIElementGetTypeID() {
+                    let win = w as! AXUIElement // swiftlint:disable:this force_cast
+                    if !roots.contains(where: { CFEqual($0, win) }) { roots.append(win) }
+                }
+            }
+            complete = !roots.isEmpty && AX.walk(roots, limit: 30000, deadline: Date().addingTimeInterval(1.2),
+                                                  reversed: true, visit: check)
+        }
+        if found, let el = foundElement {
+            stopElement[id] = el
+            var area = el
+            for _ in 0..<4 { if let p = AX.parent(area) { area = p } }
+            inputArea[id] = area
         }
 
         // Every 30 s, log the buttons seen, to learn how the Stop button is labeled.
