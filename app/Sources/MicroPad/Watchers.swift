@@ -75,11 +75,19 @@ final class ReplyWatcher {
     private static let stopWords = ["stop", "interrompi", "ferma"]
     /// …unless they're about dictation or recording ("Stop dictation", "Arresta dettatura").
     private static let excludedWords = ["dettatura", "dictation", "registrazione", "recording", "vocale", "voice"]
+    /// Buttons that appear next to the chat input once a reply is done
+    /// ("Send message", "Retry", "Start voice mode"…): positive proof the reply finished.
+    private static let doneWords = ["invia", "send", "riprova", "retry", "rigenera", "regenerate",
+                                    "avvia la modalità vocale", "start voice", "use voice"]
     /// Seconds after an app or desktop switch during which "reply finished" is not trusted:
     /// apps briefly stop exposing their UI while they're being switched away from.
-    private static let switchGrace: TimeInterval = 3
-    /// Consecutive "no Stop button" checks needed before a reply counts as finished (~4.5 s).
+    private static let switchGrace: TimeInterval = 1.5
+    /// Without positive proof: consecutive "no Stop button" checks needed (0.5 s apart).
     private static let idleChecksNeeded = 3
+    /// Check interval while a reply is being written, and otherwise.
+    private static let fastInterval: TimeInterval = 0.5
+    private static let slowEvery = 3 // slow checks = every 3rd fast tick (1.5 s)
+    private var tickCount = 0
 
     var targets: [String] {
         get { lock.lock(); defer { lock.unlock() }; return _targets }
@@ -96,15 +104,26 @@ final class ReplyWatcher {
     }
 
     func start() {
-        timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: Self.fastInterval, repeats: true) { [weak self] _ in
             guard let self else { return }
             let ids = self.targets
             let running = ids.compactMap { id in
                 NSRunningApplication.runningApplications(withBundleIdentifier: id).first.map { (id, $0.processIdentifier) }
             }
-            self.queue.async { self.tick(running) }
+            // Skip this round if the previous check is still running (scans can take ~1 s).
+            self.lock.lock()
+            let busy = self.ticking
+            self.ticking = true
+            self.lock.unlock()
+            guard !busy else { return }
+            self.queue.async {
+                self.tick(running)
+                self.lock.lock(); self.ticking = false; self.lock.unlock()
+            }
         }
     }
+
+    private var ticking = false
 
     private func tick(_ running: [(String, pid_t)]) {
         guard AXIsProcessTrusted() else { return }
@@ -114,14 +133,26 @@ final class ReplyWatcher {
             idleStreak[id] = nil
         }
         let recentlySwitched = Date().timeIntervalSince(lastSwitch) < Self.switchGrace
+        tickCount += 1
+        let slowTick = tickCount % Self.slowEvery == 0
 
         for (id, pid) in running {
+            // Apps that are writing are checked every tick, the others every 1.5 s.
+            guard generating[id] == true || slowTick else { continue }
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, 0.3)
             // Electron apps (like Claude) only expose web content when asked to.
             AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
 
-            switch hasStopButton(app) {
+            let scan = hasStopButton(app)
+            if scan.stop != true, scan.done, generating[id] == true, !recentlySwitched {
+                Log.write("REPLY \(id) writing=false (done button visible)")
+                generating[id] = false
+                idleStreak[id] = 0
+                DispatchQueue.main.async { self.onReply?(id) }
+                continue
+            }
+            switch scan.stop {
             case .some(true):
                 if generating[id] != true { Log.write("REPLY \(id) writing=true") }
                 generating[id] = true
@@ -169,16 +200,24 @@ final class ReplyWatcher {
         return true
     }
 
-    /// true = Stop button visible, false = surely not there, nil = couldn't tell.
+    private func isDone(_ label: String) -> Bool {
+        let l = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return Self.doneWords.contains(where: { l.hasPrefix($0) })
+    }
+
+    /// stop: true = Stop button visible, false = surely not there, nil = couldn't tell.
+    /// done: a "reply finished" button (Send, Retry…) was seen near the input.
     /// The Stop button sits next to the text field: start from the focused element
     /// and walk up; if needed, scan the window starting from the bottom.
-    private func hasStopButton(_ app: AXUIElement) -> Bool? {
+    private func hasStopButton(_ app: AXUIElement) -> (stop: Bool?, done: Bool) {
         var found = false
+        var done = false
         var seen: [String] = []
         let check: (AXUIElement) -> Bool = { el in
             guard let label = self.buttonLabel(el) else { return false }
             if !label.isEmpty && seen.count < 40 && !seen.contains(label) { seen.append(label) }
             if self.isStop(label) { found = true; return true }
+            if self.isDone(label) { done = true }
             return false
         }
 
@@ -203,8 +242,8 @@ final class ReplyWatcher {
             lastDump[key] = Date()
             Log.write("REPLY buttons seen (stop=\(found), complete=\(complete)): \(seen.joined(separator: " | "))")
         }
-        if found { return true }
-        return complete ? false : nil
+        if found { return (true, false) }
+        return (complete ? false : nil, done)
     }
 }
 
