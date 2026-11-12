@@ -138,6 +138,8 @@ final class AppController: ObservableObject {
     }
 
     private func frontChanged(_ app: NSRunningApplication?) {
+        replyWatcher.noteAppSwitch()
+        Log.write("APP front: \(app?.bundleIdentifier ?? "?")")
         if app?.bundleIdentifier == Bundle.main.bundleIdentifier {
             editorIsFront = true
         } else {

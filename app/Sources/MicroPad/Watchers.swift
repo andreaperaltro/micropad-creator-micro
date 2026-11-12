@@ -31,18 +31,22 @@ enum AX {
 
     /// Breadth-first walk; `visit` returns true to stop.
     /// reversed: visits the last children first (useful for elements at the bottom of a page).
+    /// Returns true if the whole tree was visited (not cut short by limit, deadline or `visit`).
+    @discardableResult
     static func walk(_ roots: [AXUIElement], limit: Int, deadline: Date, reversed: Bool = false,
-                     visit: (AXUIElement) -> Bool) {
+                     visit: (AXUIElement) -> Bool) -> Bool {
         var queue = roots
         var index = 0
-        while index < queue.count && index < limit {
-            if index % 50 == 0 && Date() > deadline { return }
+        while index < queue.count {
+            if index >= limit { return false }
+            if index % 50 == 0 && Date() > deadline { return false }
             let el = queue[index]
             index += 1
-            if visit(el) { return }
+            if visit(el) { return false }
             let kids = children(el)
             queue.append(contentsOf: reversed ? kids.reversed() : kids)
         }
+        return true
     }
 
     static func parent(_ el: AXUIElement) -> AXUIElement? {
@@ -61,14 +65,34 @@ final class ReplyWatcher {
     private let queue = DispatchQueue(label: "micropad.replies", qos: .utility)
     private let lock = NSLock()
     private var _targets: [String] = []
+    private var _lastSwitch = Date.distantPast
     private var generating: [String: Bool] = [:]
+    private var idleStreak: [String: Int] = [:]
     private var timer: Timer?
 
-    private static let stopWords = ["stop", "interrompi", "ferma", "arresta", "annulla risposta"]
+    /// Labels that start with one of these are "stop generating" buttons
+    /// (English and Italian UIs: "Stop response", "Interrompi la risposta"…).
+    private static let stopWords = ["stop", "interrompi", "ferma"]
+    /// …unless they're about dictation or recording ("Stop dictation", "Arresta dettatura").
+    private static let excludedWords = ["dettatura", "dictation", "registrazione", "recording", "vocale", "voice"]
+    /// Seconds after an app or desktop switch during which "reply finished" is not trusted:
+    /// apps briefly stop exposing their UI while they're being switched away from.
+    private static let switchGrace: TimeInterval = 3
+    /// Consecutive "no Stop button" checks needed before a reply counts as finished (~4.5 s).
+    private static let idleChecksNeeded = 3
 
     var targets: [String] {
         get { lock.lock(); defer { lock.unlock() }; return _targets }
         set { lock.lock(); _targets = newValue; lock.unlock() }
+    }
+
+    /// Call on every app activation (including desktop switches).
+    func noteAppSwitch() {
+        lock.lock(); _lastSwitch = Date(); lock.unlock()
+    }
+
+    private var lastSwitch: Date {
+        lock.lock(); defer { lock.unlock() }; return _lastSwitch
     }
 
     func start() {
@@ -85,7 +109,11 @@ final class ReplyWatcher {
     private func tick(_ running: [(String, pid_t)]) {
         guard AXIsProcessTrusted() else { return }
         let runningIDs = Set(running.map { $0.0 })
-        for id in generating.keys where !runningIDs.contains(id) { generating[id] = nil }
+        for id in generating.keys where !runningIDs.contains(id) {
+            generating[id] = nil
+            idleStreak[id] = nil
+        }
+        let recentlySwitched = Date().timeIntervalSince(lastSwitch) < Self.switchGrace
 
         for (id, pid) in running {
             let app = AXUIElementCreateApplication(pid)
@@ -93,16 +121,32 @@ final class ReplyWatcher {
             // Electron apps (like Claude) only expose web content when asked to.
             AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
 
-            let busy = hasStopButton(app)
-            if busy != generating[id] { Log.write("REPLY \(id) writing=\(busy)") }
-            if generating[id] == true && !busy {
-                DispatchQueue.main.async { self.onReply?(id) }
+            switch hasStopButton(app) {
+            case .some(true):
+                if generating[id] != true { Log.write("REPLY \(id) writing=true") }
+                generating[id] = true
+                idleStreak[id] = 0
+            case .some(false) where generating[id] == true && !recentlySwitched:
+                let n = (idleStreak[id] ?? 0) + 1
+                idleStreak[id] = n
+                if n >= Self.idleChecksNeeded {
+                    Log.write("REPLY \(id) writing=false (confirmed \(n)x)")
+                    generating[id] = false
+                    idleStreak[id] = 0
+                    DispatchQueue.main.async { self.onReply?(id) }
+                }
+            case .some(false):
+                if generating[id] == nil { generating[id] = false }
+                if recentlySwitched { idleStreak[id] = 0 }
+            case .none:
+                // Couldn't see the whole window: no conclusion either way.
+                break
             }
-            generating[id] = busy
         }
     }
 
     private var lastDump: [String: Date] = [:]
+    private var loggedStopLabels: Set<String> = []
 
     private func buttonLabel(_ el: AXUIElement) -> String? {
         guard AX.string(el, kAXRoleAttribute as String) == (kAXButtonRole as String) else { return nil }
@@ -112,23 +156,23 @@ final class ReplyWatcher {
         return label
     }
 
-    private var loggedStopLabels: Set<String> = []
-
-    /// Only labels that start with the word (e.g. "Stop response", Italian "Interrompi la risposta"),
-    /// so chat titles in the sidebar aren't mistaken for the button.
+    /// Only labels that start with the word, so chat titles in the sidebar aren't mistaken
+    /// for the button; dictation/recording buttons are excluded.
     private func isStop(_ label: String) -> Bool {
         let l = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let match = Self.stopWords.contains(where: { l.hasPrefix($0) })
-        if match && !loggedStopLabels.contains(l) {
+        guard Self.stopWords.contains(where: { l.hasPrefix($0) }),
+              !Self.excludedWords.contains(where: { l.contains($0) }) else { return false }
+        if !loggedStopLabels.contains(l) {
             loggedStopLabels.insert(l)
             Log.write("REPLY stop button found: \"\(label)\"")
         }
-        return match
+        return true
     }
 
+    /// true = Stop button visible, false = surely not there, nil = couldn't tell.
     /// The Stop button sits next to the text field: start from the focused element
     /// and walk up; if needed, scan the window starting from the bottom.
-    private func hasStopButton(_ app: AXUIElement) -> Bool {
+    private func hasStopButton(_ app: AXUIElement) -> Bool? {
         var found = false
         var seen: [String] = []
         let check: (AXUIElement) -> Bool = { el in
@@ -146,17 +190,21 @@ final class ReplyWatcher {
                 node = AX.parent(n)
             }
         }
+        var complete = false
         if !found {
-            AX.walk(AX.windows(app), limit: 30000, deadline: Date().addingTimeInterval(1.2), reversed: true, visit: check)
+            let windows = AX.windows(app)
+            complete = !windows.isEmpty && AX.walk(windows, limit: 30000, deadline: Date().addingTimeInterval(1.2),
+                                                    reversed: true, visit: check)
         }
 
         // Every 30 s, log the buttons seen, to learn how the Stop button is labeled.
         let key = "\(found)"
         if Date().timeIntervalSince(lastDump[key] ?? .distantPast) > 30 {
             lastDump[key] = Date()
-            Log.write("REPLY buttons seen (stop=\(found)): \(seen.joined(separator: " | "))")
+            Log.write("REPLY buttons seen (stop=\(found), complete=\(complete)): \(seen.joined(separator: " | "))")
         }
-        return found
+        if found { return true }
+        return complete ? false : nil
     }
 }
 
