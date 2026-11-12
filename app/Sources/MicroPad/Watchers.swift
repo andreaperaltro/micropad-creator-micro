@@ -153,8 +153,13 @@ final class ReplyWatcher {
             // Electron apps (like Claude) only expose web content when asked to.
             AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
 
+            // A reply can only start after you write in the app, so the expensive full-window scan
+            // is needed only for the app in front or one that's already writing; for the others a
+            // quick look at the area around the chat input (if known) is enough.
+            let fullScan = front == id || generating[id] == true
+            if !fullScan && inputArea[id] == nil { continue }
             let wasVisibleAt = lastConclusive[id] ?? .distantPast
-            let scan = hasStopButton(app, id: id)
+            let scan = hasStopButton(app, id: id, fullScan: fullScan)
             if scan.stop != nil || scan.done { lastConclusive[id] = Date() }
 
             // Reply finished: alert, unless we only found out now that you're back on the app
@@ -231,7 +236,7 @@ final class ReplyWatcher {
     /// done: a "reply finished" button (Send, Retry…) was seen near the input.
     /// The Stop button sits next to the text field: start from the focused element
     /// and walk up; if needed, scan the window starting from the bottom.
-    private func hasStopButton(_ app: AXUIElement, id: String) -> (stop: Bool?, done: Bool) {
+    private func hasStopButton(_ app: AXUIElement, id: String, fullScan: Bool) -> (stop: Bool?, done: Bool) {
         var found = false
         var foundElement: AXUIElement?
         var done = false
@@ -257,6 +262,8 @@ final class ReplyWatcher {
             }
             if whole { return (false, done) }
         }
+
+        guard fullScan else { return (nil, false) }
 
         if let focusedObj = AX.attr(app, kAXFocusedUIElementAttribute as String) {
             var node: AXUIElement? = (focusedObj as! AXUIElement) // swiftlint:disable:this force_cast
