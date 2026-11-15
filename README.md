@@ -6,6 +6,15 @@ The Creator Micro ships with four layers that you switch by hand, so you always 
 
 > Unofficial community project. Not affiliated with or endorsed by Work Louder.
 
+<p align="center">
+  <img src="docs/creator-micro.jpg" alt="The Creator Micro running MicroPad: keys lit in per-profile colors and the edge LEDs glowing" width="420">
+</p>
+
+<p align="center">
+  <img src="docs/editor.png" alt="The MicroPad editor: profiles on the left, the pad in the middle, the selected key's action on the right" width="800">
+  <br><sub>The editor (shown with an Italian macOS, so key names are in Italian).</sub>
+</p>
+
 ---
 
 ## Features
@@ -126,7 +135,7 @@ open -g "micropad://stop"
 - `~/Library/Application Support/MicroPad/alerts.json`: notification rules
 - `~/Library/Logs/MicroPad/micropad.log`: diagnostic log of key presses, actions, reply detection and alerts (capped at about 1 MB)
 
-Both are plain JSON. Updating the app never overwrites them, and newer versions read files written by older ones.
+`profiles.json` and `alerts.json` are plain JSON. Updating the app never overwrites them, and newer versions read files written by older ones.
 
 ## Project structure
 
