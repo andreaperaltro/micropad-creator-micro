@@ -212,6 +212,39 @@ extension Profile {
     }
 }
 
+// MARK: Global keys
+
+/// Keys and encoders whose command applies in every profile ("All apps").
+/// Their command is stored in the base profile; other profiles keep their own value
+/// untouched, so turning "All apps" off brings it back.
+struct GlobalSlots: Codable, Hashable {
+    var keys: Set<Int> = []
+    var encoders: Set<Int> = []
+    /// Color of "All apps" keys in the editor and key map, the same in every profile.
+    var color: RGB = RGB(r: 255, g: 255, b: 255)
+    /// Also light "All apps" keys in that color on the pad (off: they keep the profile color).
+    var onPad: Bool = false
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        keys = (try? c.decode(Set<Int>.self, forKey: .keys)) ?? []
+        encoders = (try? c.decode(Set<Int>.self, forKey: .encoders)) ?? []
+        color = (try? c.decode(RGB.self, forKey: .color)) ?? RGB(r: 255, g: 255, b: 255)
+        onPad = (try? c.decode(Bool.self, forKey: .onPad)) ?? false
+    }
+
+    /// Pad LED color of key i in profile p, taking "All apps" keys into account.
+    func ledColor(_ p: Profile, _ i: Int) -> RGB {
+        if onPad && keys.contains(i) && p.keys[i].action.kind != .none { return color }
+        return p.ledColor(i)
+    }
+
+    /// Pad positions to mark in the drawing (encoder rotations show on their click key).
+    var markedKeys: Set<Int> { keys.union(encoders.map(PadLayout.keyFor(encoder:))) }
+}
+
 // MARK: Notification alerts
 
 /// If a notification banner contains one of the words, the edge LEDs flash in the chosen color.

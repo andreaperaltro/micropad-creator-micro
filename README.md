@@ -25,6 +25,7 @@ The Creator Micro ships with four layers that you switch by hand, so you always 
 - **Searchable shortcut library.** For each app you get a curated list (tools, layers, chat commands…) plus every shortcut the app declares in its own menus, read live via Accessibility.
 - **Custom actions.** A key can send any shortcut (the recorder captures even global hotkeys like `⇧⌘D`), type text or prompts, open a URL or an app, press a menu item, scroll or zoom, or control media and volume. Keys stay held while you hold the pad key, so things like Space for the Photoshop hand tool work.
 - **Key map overlay.** Hold the bottom-right key to show a translucent map of the current app's keys and encoders on screen; tap it to keep the map open until the next tap. It never steals focus, and pressed keys light up in the map. It can be turned off in the menu.
+- **All-apps keys.** Mark any key, or an encoder's rotation, as "All apps" and its command works in every profile, so you set things like volume or app switching once. All-apps keys are drawn in their own color (with a globe) in the editor and key map; optionally on the pad LEDs too. Turning it off brings back each profile's own command.
 - **Two encoders.** Separate actions for left/right rotation and click, per profile (brush size, zoom, undo/redo, tab switching…).
 - **Notifications on the edge LEDs.** The underglow flashes in the profile color when:
   - **Claude or ChatGPT finishes a reply.** The app finds the "Stop" button next to the chat input (English or Italian UI) and flashes when it disappears.
@@ -133,6 +134,7 @@ open -g "micropad://stop"
 
 - `~/Library/Application Support/MicroPad/profiles.json`: profiles, keys, encoders, colors
 - `~/Library/Application Support/MicroPad/alerts.json`: notification rules
+- `~/Library/Application Support/MicroPad/globals.json`: which keys and encoders are set to All apps
 - `~/Library/Logs/MicroPad/micropad.log`: diagnostic log of key presses, actions, reply detection and alerts (capped at about 1 MB)
 
 `profiles.json` and `alerts.json` are plain JSON. Updating the app never overwrites them, and newer versions read files written by older ones.
@@ -154,7 +156,7 @@ app/Sources/MicroPad/
   Library.swift          curated shortcut lists per app
   Defaults.swift         default profiles
   Model.swift            data model (profiles, actions, alert rules, pad layout)
-  ProfileStore.swift     JSON persistence
+  ProfileStore.swift     JSON persistence (profiles, alerts, all-apps keys)
   EditorView.swift       SwiftUI editor
   AppDelegate.swift      menu bar item, URL handling, windows
   Overlay.swift          key map overlay panel

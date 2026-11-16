@@ -74,6 +74,7 @@ struct OverlayView: View {
             }
 
             PadView(profile: profile, selected: nil, pressed: ctl.pressedKeys,
+                    globalKeys: ctl.store.globals.markedKeys, globalColor: ctl.store.globals.color,
                     overrides: ctl.overlayKey ? [PadLayout.overlayKey: "Key map"] : [:]) { _ in }
 
             VStack(alignment: .leading, spacing: 4) {

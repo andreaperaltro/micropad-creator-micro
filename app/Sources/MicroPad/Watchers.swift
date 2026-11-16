@@ -68,6 +68,7 @@ final class ReplyWatcher {
     private var _lastSwitch = Date.distantPast
     private var generating: [String: Bool] = [:]
     private var idleStreak: [String: Int] = [:]
+    private var doneStreak: [String: Int] = [:]
     private var timer: Timer?
 
     /// Labels that start with one of these are "stop generating" buttons
@@ -76,15 +77,20 @@ final class ReplyWatcher {
     /// …unless they're about dictation or recording ("Stop dictation", "Arresta dettatura").
     private static let excludedWords = ["dettatura", "dictation", "registrazione", "recording", "vocale", "voice",
                                         "caricamento", "loading", "download"]
-    /// Buttons that appear next to the chat input once a reply is done
-    /// ("Send message", "Retry", "Start voice mode"…): positive proof the reply finished.
-    private static let doneWords = ["invia", "send", "riprova", "retry", "rigenera", "regenerate",
-                                    "avvia la modalità vocale", "start voice", "use voice"]
+    /// Message actions that appear under the last reply only once it's complete
+    /// ("Retry", "Read aloud", "Copy message"…): positive proof the reply finished.
+    /// "Send" is not enough: during multi-step replies (tool use) the Stop button disappears
+    /// for a few seconds between steps and "Send message" shows up meanwhile.
+    private static let doneWords = ["riprova", "retry", "rigenera", "regenerate", "leggi ad alta voce", "read aloud",
+                                    "copia messaggio", "copy message"]
+    /// Checks in a row that must show the proof before alerting (0.5 s apart).
+    private static let doneChecksNeeded = 2
     /// Seconds after an app or desktop switch during which "reply finished" is not trusted:
     /// apps briefly stop exposing their UI while they're being switched away from.
     private static let switchGrace: TimeInterval = 1.5
     /// Without positive proof: consecutive "no Stop button" checks needed (0.5 s apart).
-    private static let idleChecksNeeded = 3
+    /// Long enough to ride out the pauses between the steps of a multi-step reply.
+    private static let idleChecksNeeded = 14
     /// Check interval while a reply is being written, and otherwise.
     private static let fastInterval: TimeInterval = 0.5
     private static let slowEvery = 3 // slow checks = every 3rd fast tick (1.5 s)
@@ -179,8 +185,15 @@ final class ReplyWatcher {
             }
 
             if scan.stop != true, scan.done, generating[id] == true, !recentlySwitched {
-                finished("done button visible")
-                continue
+                let n = (doneStreak[id] ?? 0) + 1
+                doneStreak[id] = n
+                if n >= Self.doneChecksNeeded {
+                    doneStreak[id] = 0
+                    finished("reply actions visible")
+                    continue
+                }
+            } else {
+                doneStreak[id] = 0
             }
             switch scan.stop {
             case .some(true):

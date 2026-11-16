@@ -103,6 +103,9 @@ final class AppController: ObservableObject {
         store.$profiles.dropFirst()
             .sink { [weak self] _ in DispatchQueue.main.async { self?.pushLights(); self?.updateWatchTargets() } }
             .store(in: &cancellables)
+        store.$globals.dropFirst()
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.pushLights() } }
+            .store(in: &cancellables)
         $editingProfileID.dropFirst()
             .sink { [weak self] _ in DispatchQueue.main.async { self?.pushLights() } }
             .store(in: &cancellables)
@@ -129,11 +132,11 @@ final class AppController: ObservableObject {
 
     // MARK: Active profile
 
-    var activeProfile: Profile { store.profile(id: activeProfileID) ?? store.base }
+    var activeProfile: Profile { store.effective(store.profile(id: activeProfileID) ?? store.base) }
 
     /// What the pad shows: the profile being edited if the editor is in front, otherwise the frontmost app's profile.
     var shownProfile: Profile {
-        if editorIsFront, let p = store.profile(id: editingProfileID) { return p }
+        if editorIsFront, let p = store.profile(id: editingProfileID) { return store.effective(p) }
         return activeProfile
     }
 
@@ -165,7 +168,7 @@ final class AppController: ObservableObject {
     func pushLights() {
         guard connected else { return }
         let p = shownProfile
-        pad.setKeyColors((0..<16).map { keyLEDs ? p.ledColor($0) : .off })
+        pad.setKeyColors((0..<16).map { keyLEDs ? store.globals.ledColor(p, $0) : .off })
         if flashTimer == nil { pad.setUnderglow(restingEdgeColor) }
     }
 

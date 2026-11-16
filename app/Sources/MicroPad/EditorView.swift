@@ -69,6 +69,17 @@ struct EditorView: View {
             }
             Toggle("Key LEDs", isOn: $ctl.keyLEDs)
                 .toggleStyle(.switch).controlSize(.small)
+            HStack {
+                Image(systemName: "globe")
+                ColorPicker("All-apps keys", selection: Binding(
+                    get: { store.globals.color.color },
+                    set: { store.globals.color = RGB($0) }), supportsOpacity: false)
+                Spacer()
+                Toggle("Also on the pad", isOn: $store.globals.onPad)
+                    .toggleStyle(.checkbox)
+            }
+            .font(.caption)
+            .help("Color that marks the keys set to All apps in the editor and key map. Tick \"Also on the pad\" to light them in this color on the pad too.")
             Toggle("Key map (bottom-right key)", isOn: $ctl.overlayKey)
                 .toggleStyle(.switch).controlSize(.small)
             Toggle("Edge LEDs", isOn: $ctl.edgeLEDs)
@@ -130,6 +141,7 @@ struct EditorView: View {
 struct ProfileEditor: View {
     @Binding var profile: Profile
     @EnvironmentObject var ctl: AppController
+    @EnvironmentObject var store: ProfileStore
 
     var body: some View {
         HSplitView {
@@ -149,7 +161,8 @@ struct ProfileEditor: View {
                 Spacer(minLength: 0)
                 HStack {
                     Spacer()
-                    PadView(profile: profile, selected: ctl.selectedKey, pressed: ctl.pressedKeys,
+                    PadView(profile: store.effective(profile), selected: ctl.selectedKey, pressed: ctl.pressedKeys,
+                            globalKeys: store.globals.markedKeys, globalColor: store.globals.color,
                             overrides: ctl.overlayKey ? [PadLayout.overlayKey: "Key map"] : [:]) { i in
                         ctl.selectedKey = i
                     }
@@ -270,6 +283,10 @@ struct PadView: View {
     let profile: Profile
     let selected: Int?
     let pressed: Set<Int>
+    /// Keys marked as "All apps" (a small globe is drawn on them).
+    var globalKeys: Set<Int> = []
+    /// LED color of "All apps" keys.
+    var globalColor: RGB? = nil
     /// Forced labels for some keys (e.g. the key map key).
     var overrides: [Int: String] = [:]
     let onSelect: (Int) -> Void
@@ -296,9 +313,10 @@ struct PadView: View {
         let isCorner = PadLayout.corners.contains(i)
         let isEncoder = PadLayout.encoderFor(key: i) != nil
         let action = profile.keys[i].action
-        let fill: Color = isCorner ? Color(white: 0.25) : profile.ledColor(i).color
+        let led: RGB = (globalKeys.contains(i) && action.kind != .none ? globalColor : nil) ?? profile.ledColor(i)
+        let fill: Color = isCorner ? Color(white: 0.25) : led.color
         // Light text on dark (or unlit) keys, dark text on light keys.
-        let lightText = isCorner || action.kind == .none || !profile.ledColor(i).isLight
+        let lightText = isCorner || action.kind == .none || !led.isLight
         let size = isCorner ? keySize * 0.8 : keySize
         let shape = RoundedRectangle(cornerRadius: isEncoder ? size / 2 : (isCorner ? size / 2 : 10))
 
@@ -310,6 +328,13 @@ struct PadView: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.white.opacity(0.6))
                     .offset(y: -size / 2 + 12)
+            }
+            if globalKeys.contains(i) && overrides[i] == nil {
+                Image(systemName: "globe")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(lightText ? Color.white.opacity(0.8) : Color.black.opacity(0.6))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(5)
             }
             Text(overrides[i] ?? action.displayText)
                 .font(.system(size: 10, weight: .semibold))
@@ -336,6 +361,49 @@ struct KeyInspector: View {
     @Binding var profile: Profile
     let index: Int
     @EnvironmentObject var ctl: AppController
+    @EnvironmentObject var store: ProfileStore
+
+    private var isGlobalKey: Bool { store.globals.keys.contains(index) }
+
+    /// The slot being edited: the shared one (in the base profile) when the key is "All apps".
+    private var slot: Binding<KeySlot> {
+        if isGlobalKey && !profile.isBase {
+            let i = index
+            return Binding(get: { store.base.keys[i] },
+                           set: { store.profiles[store.baseIndex].keys[i] = $0 })
+        }
+        return $profile.keys[index]
+    }
+
+    private func encoderSlot(_ e: Int) -> Binding<EncoderSlot> {
+        if store.globals.encoders.contains(e) && !profile.isBase {
+            return Binding(get: { store.base.encoders[e] },
+                           set: { store.profiles[store.baseIndex].encoders[e] = $0 })
+        }
+        return $profile.encoders[e]
+    }
+
+    private var globalKeyToggle: some View {
+        Toggle(isOn: Binding(
+            get: { isGlobalKey },
+            set: { on in
+                if on { store.makeGlobal(key: index, from: profile) } else { store.globals.keys.remove(index) }
+            })) {
+            Label("All apps", systemImage: "globe")
+        }
+        .help("Use this command in every profile. Turning it off brings back each profile's own command.")
+    }
+
+    private func globalEncoderToggle(_ e: Int) -> some View {
+        Toggle(isOn: Binding(
+            get: { store.globals.encoders.contains(e) },
+            set: { on in
+                if on { store.makeGlobal(encoder: e, from: profile) } else { store.globals.encoders.remove(e) }
+            })) {
+            Label("Rotation in all apps", systemImage: "globe")
+        }
+        .help("Use these turn commands in every profile.")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -352,8 +420,11 @@ struct KeyInspector: View {
                 }
             } else {
                 GroupBox(PadLayout.encoderFor(key: index) != nil ? "Click" : "Press") {
-                    ActionEditor(action: $profile.keys[index].action, apps: profile.bundleIDs)
-                        .padding(6)
+                    VStack(alignment: .leading, spacing: 10) {
+                        globalKeyToggle
+                        ActionEditor(action: slot.action, apps: profile.bundleIDs)
+                    }
+                    .padding(6)
                 }
                 if index == PadLayout.overlayKey {
                     Toggle("Use this key for the key map", isOn: $ctl.overlayKey)
@@ -364,12 +435,12 @@ struct KeyInspector: View {
                 GroupBox("Key color") {
                     VStack(alignment: .leading) {
                         Toggle("Custom color", isOn: Binding(
-                            get: { profile.keys[index].color != nil },
-                            set: { profile.keys[index].color = $0 ? profile.color : nil }))
-                        if let c = profile.keys[index].color {
+                            get: { slot.wrappedValue.color != nil },
+                            set: { slot.wrappedValue.color = $0 ? profile.color : nil }))
+                        if let c = slot.wrappedValue.color {
                             ColorPicker("Color", selection: Binding(
                                 get: { c.color },
-                                set: { profile.keys[index].color = RGB($0) }), supportsOpacity: false)
+                                set: { slot.wrappedValue.color = RGB($0) }), supportsOpacity: false)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -378,11 +449,12 @@ struct KeyInspector: View {
             }
 
             if let e = PadLayout.encoderFor(key: index) {
+                globalEncoderToggle(e)
                 GroupBox("Turn left ↺") {
-                    ActionEditor(action: $profile.encoders[e].left, apps: profile.bundleIDs).padding(6)
+                    ActionEditor(action: encoderSlot(e).left, apps: profile.bundleIDs).padding(6)
                 }
                 GroupBox("Turn right ↻") {
-                    ActionEditor(action: $profile.encoders[e].right, apps: profile.bundleIDs).padding(6)
+                    ActionEditor(action: encoderSlot(e).right, apps: profile.bundleIDs).padding(6)
                 }
             }
         }
