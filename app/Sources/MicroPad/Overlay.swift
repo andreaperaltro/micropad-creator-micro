@@ -19,11 +19,15 @@ final class OverlayController {
             p.ignoresMouseEvents = true
             p.hidesOnDeactivate = false
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-            let host = NSHostingView(rootView: OverlayView().environmentObject(controller))
+            let host = NSHostingView(rootView: OverlayView()
+                .environmentObject(controller)
+                .environmentObject(controller.store))
             p.contentView = host
             panel = p
         }
         guard let panel else { return }
+        // Redraw with the current profile and All-apps keys every time the map opens.
+        controller.objectWillChange.send()
         if let host = panel.contentView {
             let size = host.fittingSize
             panel.setContentSize(size)
@@ -57,6 +61,8 @@ final class OverlayController {
 
 struct OverlayView: View {
     @EnvironmentObject var ctl: AppController
+    // Observed so the map refreshes when All-apps keys or profiles change.
+    @EnvironmentObject var store: ProfileStore
 
     var body: some View {
         let profile = ctl.activeProfile
@@ -74,7 +80,7 @@ struct OverlayView: View {
             }
 
             PadView(profile: profile, selected: nil, pressed: ctl.pressedKeys,
-                    globalKeys: ctl.store.globals.markedKeys, globalColor: ctl.store.globals.color,
+                    globalKeys: store.globals.markedKeys, globalColor: store.globals.color,
                     overrides: ctl.overlayKey ? [PadLayout.overlayKey: "Key map"] : [:]) { _ in }
 
             VStack(alignment: .leading, spacing: 4) {
