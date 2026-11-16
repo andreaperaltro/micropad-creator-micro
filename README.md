@@ -30,6 +30,7 @@ The Creator Micro ships with four layers that you switch by hand, so you always 
 - **Notifications on the edge LEDs.** The underglow flashes in the profile color when:
   - **Claude or ChatGPT finishes a reply.** The app finds the "Stop" button next to the chat input (English or Italian UI) and flashes when it disappears.
   - **Gmail gets new mail.** The app watches the unread count in the Chrome tab title.
+  - **Claude or Codex asks for your permission** ("Allow once" / "Deny"): the edge blinks fast and continuously in the app's color until you switch to it or press a key.
   - **A macOS notification banner matches your keywords**, in a color you pick.
   - **Anything else triggers it** through the `micropad://` URL scheme, for example Claude Code hooks, scripts or Shortcuts.
 

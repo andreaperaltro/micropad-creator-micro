@@ -115,6 +115,7 @@ final class AppController: ObservableObject {
         pad.start()
 
         replyWatcher.onReply = { [weak self] id in self?.replyReady(id) }
+        replyWatcher.onPermission = { [weak self] id in self?.permissionNeeded(id) }
         notificationWatcher.onBanner = { [weak self] text in self?.bannerAppeared(text) }
         updateWatchTargets()
         replyWatcher.start()
@@ -177,7 +178,7 @@ final class AppController: ObservableObject {
     private func handleKey(_ i: Int, _ down: Bool) {
         guard i >= 0 && i < 16 else { return }
         if down { pressedKeys.insert(i) } else { pressedKeys.remove(i) }
-        if down && (holdColor != nil || (flashTimer != nil && holdAfter)) { stopFlash() }
+        if down && (holdColor != nil || (flashTimer != nil && (holdAfter || flashPhases < 0))) { stopFlash() }
 
         if editorIsFront {
             if down { selectedKey = i }
@@ -335,6 +336,20 @@ final class AppController: ObservableObject {
         let isFront = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID
         // If you're already looking at the app, two blinks are enough; otherwise flash until a key is pressed.
         alertFlash(profile.color, untilPressed: !isFront, bundle: bundleID)
+    }
+
+    /// The app is waiting for your permission: fast, continuous blinking in the app's color
+    /// (different from the "reply ready" pattern) until you switch to it or press a key.
+    private func permissionNeeded(_ bundleID: String) {
+        let profile = store.profile(for: bundleID)
+        let isFront = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID
+        Log.write("FLASH permission #\(profile.color.hex) app=\(bundleID) front=\(isFront)")
+        if isFront {
+            flashUnderglow(profile.color, phases: 6, period: 0.12)
+        } else {
+            flashUnderglow(profile.color, phases: -1, period: 0.18)
+            stickyBundle = bundleID
+        }
     }
 
     private func bannerAppeared(_ text: String) {

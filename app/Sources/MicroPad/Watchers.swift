@@ -61,6 +61,8 @@ enum AX {
 /// "Stop" button. When that button disappears, the reply is ready. Stop words include localized labels.
 final class ReplyWatcher {
     var onReply: ((String) -> Void)?
+    /// The app is waiting for your permission ("Allow once" / "Deny" buttons).
+    var onPermission: ((String) -> Void)?
 
     private let queue = DispatchQueue(label: "micropad.replies", qos: .utility)
     private let lock = NSLock()
@@ -83,6 +85,9 @@ final class ReplyWatcher {
     /// for a few seconds between steps and "Send message" shows up meanwhile.
     private static let doneWords = ["riprova", "retry", "rigenera", "regenerate", "leggi ad alta voce", "read aloud",
                                     "copia messaggio", "copy message"]
+    /// Buttons of a permission request ("Allow once", "Deny"…): the app is waiting for you.
+    private static let permissionWords = ["consenti", "allow", "approva", "approve"]
+    private var asking: [String: Bool] = [:]
     /// Checks in a row that must show the proof before alerting (0.5 s apart).
     private static let doneChecksNeeded = 2
     /// Seconds after an app or desktop switch during which "reply finished" is not trusted:
@@ -166,7 +171,21 @@ final class ReplyWatcher {
             if !fullScan && inputArea[id] == nil { continue }
             let wasVisibleAt = lastConclusive[id] ?? .distantPast
             let scan = hasStopButton(app, id: id, fullScan: fullScan)
-            if scan.stop != nil || scan.done { lastConclusive[id] = Date() }
+            if scan.stop != nil || scan.done || scan.asking { lastConclusive[id] = Date() }
+
+            // Permission request: alert once when it appears; re-arm once it's gone.
+            if scan.asking {
+                if asking[id] != true {
+                    asking[id] = true
+                    Log.write("PERMISSION requested in \(id)")
+                    DispatchQueue.main.async { self.onPermission?(id) }
+                }
+                idleStreak[id] = 0
+                doneStreak[id] = 0
+                continue // waiting for you, not finished
+            } else if scan.stop != nil {
+                asking[id] = false
+            }
 
             // Reply finished: alert, unless we only found out now that you're back on the app
             // after not being able to see it (you're already looking at the answer).
@@ -249,34 +268,42 @@ final class ReplyWatcher {
     /// done: a "reply finished" button (Send, Retry…) was seen near the input.
     /// The Stop button sits next to the text field: start from the focused element
     /// and walk up; if needed, scan the window starting from the bottom.
-    private func hasStopButton(_ app: AXUIElement, id: String, fullScan: Bool) -> (stop: Bool?, done: Bool) {
+    private func isAsking(_ label: String) -> Bool {
+        let l = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return Self.permissionWords.contains(where: { l.hasPrefix($0) })
+    }
+
+    private func hasStopButton(_ app: AXUIElement, id: String, fullScan: Bool)
+        -> (stop: Bool?, done: Bool, asking: Bool) {
         var found = false
         var foundElement: AXUIElement?
         var done = false
+        var asking = false
         var seen: [String] = []
         let check: (AXUIElement) -> Bool = { el in
             guard let label = self.buttonLabel(el) else { return false }
             if !label.isEmpty && seen.count < 40 && !seen.contains(label) { seen.append(label) }
             if self.isStop(label) { found = true; foundElement = el; return true }
             if self.isDone(label) { done = true }
+            if self.isAsking(label) { asking = true }
             return false
         }
 
         // 1. The Stop button we already know about: still there and still "Stop"?
         if let el = stopElement[id], let label = buttonLabel(el), isStop(label) {
-            return (true, false)
+            return (true, false, false)
         }
         // 2. The area around the chat input: look inside it (works on other desktops too).
         if let area = inputArea[id], AX.string(area, kAXRoleAttribute as String) != nil {
             let whole = AX.walk([area], limit: 3000, deadline: Date().addingTimeInterval(0.4), reversed: true, visit: check)
             if found {
                 stopElement[id] = foundElement
-                return (true, false)
+                return (true, false, false)
             }
-            if whole { return (false, done) }
+            if whole { return (false, done, asking) }
         }
 
-        guard fullScan else { return (nil, false) }
+        guard fullScan else { return (nil, false, asking) }
 
         if let focusedObj = AX.attr(app, kAXFocusedUIElementAttribute as String) {
             var node: AXUIElement? = (focusedObj as! AXUIElement) // swiftlint:disable:this force_cast
@@ -312,8 +339,8 @@ final class ReplyWatcher {
             lastDump[key] = Date()
             Log.write("REPLY buttons seen (stop=\(found), complete=\(complete)): \(seen.joined(separator: " | "))")
         }
-        if found { return (true, false) }
-        return (complete ? false : nil, done)
+        if found { return (true, false, false) }
+        return (complete ? false : nil, done, asking)
     }
 }
 
